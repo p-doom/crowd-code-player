@@ -34,7 +34,7 @@ def apply_change(content, offset, length, new_text):
         
     return content[:offset] + new_text + content[offset + length:]
 
-def replay_trace(stdscr, filepath, speed_factor):
+def replay_trace(stdscr, filepath, speed_factor, long_pause_threshold=120000):
     """Main function to replay the coding trace in the terminal."""
     # --- Curses Setup ---
     curses.curs_set(0) # We'll draw our own cursor
@@ -160,14 +160,14 @@ def replay_trace(stdscr, filepath, speed_factor):
             time_delta_ms = df.iloc[i+1]['Time'] - event['Time']
             sleep_duration_s = max(0, time_delta_ms / 1000.0)
             
-            # Check for long pauses (>2 minutes)
-            if time_delta_ms > 120000:  # 2 minutes in milliseconds
+            # Check for long pauses
+            if time_delta_ms > long_pause_threshold:
                 # Display long pause message
                 height, width = stdscr.getmaxyx()
                 pause_message = "Long pause detected. User might be googling, thinking or might have gone for a coffee..."
                 stdscr.addstr(height - 3, 0, pause_message.ljust(width - 1), curses.A_REVERSE)
                 stdscr.refresh()
-                time.sleep(2)  # Show message for 2 seconds
+                time.sleep(4)  # Show message for 4 seconds
                 stdscr.clear()
             else:
                 time.sleep(sleep_duration_s / speed_factor)
@@ -175,7 +175,8 @@ def replay_trace(stdscr, filepath, speed_factor):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Replay coding traces from a CSV file in the terminal.")
     parser.add_argument("filepath", help="The path to the source CSV file.")
-    parser.add_argument("--speed", type=float, default=2.0, help="Initial playback speed multiplier.")
+    parser.add_argument("--speed", type=float, default=20.0, help="Initial playback speed multiplier.")
+    parser.add_argument("--long_pause_threshold", type=int, default=120000, help="Threshold for long pause in milliseconds.")
     args = parser.parse_args()
 
-    curses.wrapper(replay_trace, args.filepath, args.speed)
+    curses.wrapper(replay_trace, args.filepath, args.speed, args.long_pause_threshold)
