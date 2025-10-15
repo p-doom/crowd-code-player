@@ -108,10 +108,19 @@ def replay_trace(stdscr, filepath, speed_factor):
         visible_height = height - 2 # Account for status bars
 
         # Adjust scroll to keep cursor in view
-        if cursor_y < scroll_y:
-            scroll_y = cursor_y
-        elif cursor_y >= scroll_y + visible_height:
-            scroll_y = cursor_y - visible_height + 1
+        if active_file == "TERMINAL":
+            # For terminal, always scroll to bottom to show latest content
+            lines = content.split('\n')
+            total_lines = len(lines)
+            if total_lines > visible_height:
+                scroll_y = max(0, total_lines - visible_height)
+        else:
+            # For regular files, keep cursor in view
+            if cursor_y < scroll_y:
+                scroll_y = cursor_y
+            elif cursor_y >= scroll_y + visible_height:
+                scroll_y = cursor_y - visible_height + 1
+        
         scroll_states[active_file] = scroll_y
 
         # --- Render to Screen ---
