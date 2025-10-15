@@ -159,7 +159,18 @@ def replay_trace(stdscr, filepath, speed_factor):
         if i + 1 < len(df):
             time_delta_ms = df.iloc[i+1]['Time'] - event['Time']
             sleep_duration_s = max(0, time_delta_ms / 1000.0)
-            time.sleep(sleep_duration_s / speed_factor)
+            
+            # Check for long pauses (>2 minutes)
+            if time_delta_ms > 120000:  # 2 minutes in milliseconds
+                # Display long pause message
+                height, width = stdscr.getmaxyx()
+                pause_message = "Long pause detected. User might be googling, thinking or might have gone for a coffee..."
+                stdscr.addstr(height - 3, 0, pause_message.ljust(width - 1), curses.A_REVERSE)
+                stdscr.refresh()
+                time.sleep(2)  # Show message for 2 seconds
+                stdscr.clear()
+            else:
+                time.sleep(sleep_duration_s / speed_factor)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Replay coding traces from a CSV file in the terminal.")
