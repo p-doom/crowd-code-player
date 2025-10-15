@@ -167,7 +167,7 @@ def replay_trace(stdscr, filepath, speed_factor, long_pause_threshold=120000):
                 pause_message = "Long pause detected. User might be googling, thinking or might have gone for a coffee..."
                 stdscr.addstr(height - 3, 0, pause_message.ljust(width - 1), curses.A_REVERSE)
                 stdscr.refresh()
-                time.sleep(4)  # Show message for 4 seconds
+                time.sleep(1)  # Show message for 1 seconds
                 stdscr.clear()
             else:
                 time.sleep(sleep_duration_s / speed_factor)
