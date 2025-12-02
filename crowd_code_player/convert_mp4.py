@@ -48,7 +48,7 @@ def get_monospaced_font(size=14):
     print("Warning: Could not find a standard TTF font. Using PIL default (might look pixelated).")
     return ImageFont.load_default()
 
-def create_frame(width, height, content, cursor_pos, scroll_y, active_file, status_text, font, char_w, char_h):
+def create_frame(width, height, content, cursor_pos, scroll_y, active_file, status_text, font, char_w, char_h, pause_message=None):
     """Draws a single video frame using PIL."""
     # Create black background
     img = Image.new('RGB', (width, height), color=(0, 0, 0))
@@ -75,9 +75,6 @@ def create_frame(width, height, content, cursor_pos, scroll_y, active_file, stat
         cursor_px_y = display_y * char_h
         
         # Draw a white rectangle for the cursor (simulating block cursor)
-        # We draw it with some transparency (alpha) logic manually or just swap colors
-        # Here we just draw a white block. To make text visible underneath, 
-        # we'd usually draw the rect then the text in black.
         draw.rectangle(
             [cursor_px_x, cursor_px_y, cursor_px_x + char_w, cursor_px_y + char_h], 
             fill=(255, 255, 255)
@@ -96,9 +93,15 @@ def create_frame(width, height, content, cursor_pos, scroll_y, active_file, stat
     # Draw Status Text (Black on White)
     draw.text((0, bar_y), status_text, font=font, fill=(0, 0, 0))
     
+    # Draw pause message if provided (above status bar)
+    if pause_message:
+        pause_bar_y = bar_y - char_h
+        draw.rectangle([0, pause_bar_y, width, pause_bar_y + char_h], fill=(255, 165, 0))  # Orange background
+        draw.text((0, pause_bar_y), pause_message, font=font, fill=(0, 0, 0))
+    
     return np.array(img)
 
-def render_video(filepath, output_file, speed_factor, width=1280, height=720, fps=30):
+def render_video(filepath, output_file, speed_factor, width=1280, height=720, fps=30, long_pause_threshold=120000):
     """Main loop to process data and write MP4."""
     
     print(f"Processing {filepath}...")
@@ -171,32 +174,53 @@ def render_video(filepath, output_file, speed_factor, width=1280, height=720, fp
         # Prepare Status Text
         status_text = f"File: {active_file} | Time: {event['Time']/1000:.1f}s | Speed: {speed_factor}x"
         
-        # Create the visual frame (numpy array)
-        frame_image = create_frame(
-            width, height, content, (cursor_y, cursor_x), 
-            scroll_y, active_file, status_text, font, char_w, char_h
-        )
-        
         # --- Time Calculation ---
         # Determine how many frames to repeat this image for
         if next_event is not None:
             real_delta_ms = next_event['Time'] - event['Time']
             
-            # Apply speed factor
-            video_delta_ms = real_delta_ms / speed_factor
+            # Check for long pause
+            is_long_pause = real_delta_ms > long_pause_threshold
             
-            # Convert ms to frame count
-            frames_to_write = int((video_delta_ms / 1000.0) * fps)
-            
-            # Ensure at least 1 frame if there's a gap, but allow 0 for instant events
-            if frames_to_write < 1 and video_delta_ms > 10: 
-                frames_to_write = 1
+            if is_long_pause:
+                # For long pauses, show the pause message for 3 seconds instead of the full duration
+                pause_message = "Long pause detected. User might be googling, thinking or might have gone for a coffee..."
+                
+                # Create frame WITH pause message
+                frame_with_pause = create_frame(
+                    width, height, content, (cursor_y, cursor_x), 
+                    scroll_y, active_file, status_text, font, char_w, char_h, pause_message=pause_message
+                )
+                
+                # Show pause message for 3 seconds
+                pause_display_frames = fps * 3
+                for _ in range(pause_display_frames):
+                    video_out.write(frame_with_pause)
+                
+                # Continue with a brief normal frame (no pause message)
+                frames_to_write = fps  # 1 additional second
+            else:
+                # Apply speed factor
+                video_delta_ms = real_delta_ms / speed_factor
+                
+                # Convert ms to frame count
+                frames_to_write = int((video_delta_ms / 1000.0) * fps)
+                
+                # Ensure at least 1 frame if there's a gap, but allow 0 for instant events
+                if frames_to_write < 1 and video_delta_ms > 10: 
+                    frames_to_write = 1
         else:
             # Last event, hold for 2 seconds
             frames_to_write = fps * 2
+            is_long_pause = False
 
+        # Create the visual frame (numpy array) - normal frame without pause message
+        frame_image = create_frame(
+            width, height, content, (cursor_y, cursor_x), 
+            scroll_y, active_file, status_text, font, char_w, char_h
+        )
+        
         # Write the frames
-        # Optimization: We generate the image ONCE, then write it N times
         for _ in range(frames_to_write):
             video_out.write(frame_image)
             
@@ -214,7 +238,8 @@ if __name__ == "__main__":
     parser.add_argument("--speed", type=float, default=20.0, help="Playback speed multiplier.")
     parser.add_argument("--width", type=int, default=1280, help="Video width.")
     parser.add_argument("--height", type=int, default=720, help="Video height.")
+    parser.add_argument("--long_pause_threshold", type=int, default=120000, help="Threshold for long pause in milliseconds.")
     
     args = parser.parse_args()
     
-    render_video(args.filepath, args.output, args.speed, args.width, args.height)
+    render_video(args.filepath, args.output, args.speed, args.width, args.height, long_pause_threshold=args.long_pause_threshold)
