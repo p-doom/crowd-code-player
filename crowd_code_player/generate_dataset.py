@@ -1,7 +1,7 @@
 
 from huggingface_hub import HfApi, hf_hub_download
 import argparse
-from crowd_code_player.convert_mp4 import render_video
+from convert_mp4 import render_video
 
 parser = argparse.ArgumentParser(description="Render coding traces to MP4.")
 parser.add_argument("--speed", type=float, default=20.0, help="Playback speed multiplier.")
@@ -35,7 +35,7 @@ for idx, csv_file in enumerate(csv_files, 1):
             repo_type=repo_type
         )
 
-        output_filename = f"{args.output}_{csv_file.replace('/', '_').replace('.csv', '')}.mp4"
+        output_filename = f"vid_{csv_file.replace('/', '_').replace('.csv', '')}.mp4"
         render_video(file_path, output_filename, args.speed, args.width, args.height)
         
     except Exception as e:

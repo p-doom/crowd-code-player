@@ -3,8 +3,10 @@ import argparse
 import cv2
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
+from pathlib import Path
+import json
 
-# --- Helper Functions (Preserved) ---
+# --- Helper Functions ---
 
 def offset_to_yx(content, offset):
     """Converts a 1D string offset to 2D (y, x) coordinates."""
@@ -26,6 +28,75 @@ def apply_change(content, offset, length, new_text):
     if offset > len(content):
         content += ' ' * (offset - len(content))
     return content[:offset] + new_text + content[offset + length:]
+
+# --- Keystroke Inference ---
+
+def infer_inserted_keys(new_text: str) -> list:
+    """Convert inserted text to keystroke sequence."""
+    if not new_text:
+        return []
+    
+    keystrokes = []
+    for char in new_text:
+        if char == '\n':
+            keystrokes.append({"key": "Enter", "shift": False, "ctrl": False})
+        elif char == '\t':
+            keystrokes.append({"key": "Tab", "shift": False, "ctrl": False})
+        elif char == ' ':
+            keystrokes.append({"key": "Space", "shift": False, "ctrl": False})
+        elif char.isupper():
+            keystrokes.append({"key": char, "shift": True, "ctrl": False})
+        elif char in '~!@#$%^&*()_+{}|:"<>?':
+            keystrokes.append({"key": char, "shift": True, "ctrl": False})
+        else:
+            keystrokes.append({"key": char, "shift": False, "ctrl": False})
+    
+    return keystrokes
+
+def classify_action(offset, length, new_text, time_delta_ms):
+    """Classify the action type and extract inserted keystrokes."""
+    new_text = new_text or ""
+    
+    if length == 0 and len(new_text) == 0:
+        action_type = "noop"
+    elif length == 0 and len(new_text) == 1:
+        if new_text == '\n':
+            action_type = "insert_newline"
+        elif new_text == ' ':
+            action_type = "insert_space"
+        elif new_text == '\t':
+            action_type = "insert_tab"
+        else:
+            action_type = "insert_char"
+    elif length == 0 and len(new_text) > 1:
+        if '\n' in new_text:
+            action_type = "paste_multiline"
+        else:
+            action_type = "paste_text"
+    elif length == 1 and len(new_text) == 0:
+        action_type = "delete_char"
+    elif length > 1 and len(new_text) == 0:
+        action_type = "delete_selection"
+    elif length > 0 and len(new_text) > 0:
+        action_type = "replace"
+    else:
+        action_type = "unknown"
+    
+    if length == 0 and len(new_text) > 0:
+        keystrokes = infer_inserted_keys(new_text)
+    else:
+        keystrokes = []
+    
+    return {
+        "type": action_type,
+        "offset": offset,
+        "delete_length": length,
+        "insert_length": len(new_text),
+        "insert_text": new_text,
+        "time_delta_ms": time_delta_ms,
+        "is_multiline": '\n' in new_text,
+        "keystrokes": keystrokes
+    }
 
 # --- Video Rendering Functions ---
 
@@ -49,21 +120,15 @@ def get_monospaced_font(size=14):
 
 def get_font_metrics(font):
     """Calculate consistent character dimensions for a monospaced font."""
-    # Use getlength for accurate advance width (horizontal spacing)
     char_w = int(font.getlength("A"))
-    
-    # Use font metrics for consistent line height
     ascent, descent = font.getmetrics()
     char_h = ascent + descent
-    
-    # Calculate the vertical offset needed to align text with cursor
-    # getbbox gives the actual drawn bounds, which may have a top offset
     bbox = font.getbbox("A")
-    baseline_offset = bbox[1]  # Top offset of the glyph
-    
+    baseline_offset = bbox[1]
     return char_w, char_h, ascent, baseline_offset
 
-def create_frame(width, height, content, cursor_pos, scroll_y, active_file, status_text, font, char_w, char_h, ascent, baseline_offset, pause_message=None):
+def create_frame(width, height, content, cursor_pos, scroll_y, active_file, status_text, 
+                 font, char_w, char_h, ascent, baseline_offset, pause_message=None):
     """Draws a single video frame using PIL."""
     img = Image.new('RGB', (width, height), color=(0, 0, 0))
     draw = ImageDraw.Draw(img)
@@ -71,17 +136,14 @@ def create_frame(width, height, content, cursor_pos, scroll_y, active_file, stat
     lines = content.split('\n')
     max_visible_lines = (height // char_h) - 2
     
-    # Text rendering offset to align with cursor grid
     text_y_offset = -baseline_offset
     
-    # Draw File Content
     for i in range(max_visible_lines):
         line_idx = scroll_y + i
         if line_idx < len(lines):
             y_pos = i * char_h + text_y_offset
             draw.text((0, y_pos), lines[line_idx], font=font, fill=(200, 200, 200))
     
-    # Draw Cursor
     cursor_y, cursor_x = cursor_pos
     display_y = cursor_y - scroll_y
     
@@ -89,26 +151,21 @@ def create_frame(width, height, content, cursor_pos, scroll_y, active_file, stat
         cursor_px_x = cursor_x * char_w
         cursor_px_y = display_y * char_h
         
-        # Draw cursor rectangle aligned to the character grid
         draw.rectangle(
             [cursor_px_x, cursor_px_y, cursor_px_x + char_w, cursor_px_y + char_h], 
             fill=(255, 255, 255)
         )
         
-        # Redraw the character under the cursor in black
         if cursor_y < len(lines):
             line = lines[cursor_y]
             if cursor_x < len(line):
                 char_under = line[cursor_x]
-                # Draw character at same offset as other text
                 draw.text((cursor_px_x, cursor_px_y + text_y_offset), char_under, font=font, fill=(0, 0, 0))
 
-    # Draw Status Bar
     bar_y = height - (2 * char_h)
     draw.rectangle([0, bar_y, width, bar_y + char_h], fill=(255, 255, 255))
     draw.text((0, bar_y + text_y_offset), status_text, font=font, fill=(0, 0, 0))
     
-    # Draw pause message if provided
     if pause_message:
         pause_bar_y = bar_y - char_h
         draw.rectangle([0, pause_bar_y, width, pause_bar_y + char_h], fill=(255, 165, 0))
@@ -116,8 +173,9 @@ def create_frame(width, height, content, cursor_pos, scroll_y, active_file, stat
     
     return np.array(img)
 
-def render_video(filepath, output_file, speed_factor, width=1280, height=720, fps=30, long_pause_threshold=120000):
-    """Main loop to process data and write MP4."""
+def render_video(filepath, output_file, speed_factor, width=1280, height=720, 
+                 fps=30, long_pause_threshold=120000, save_labels=True):
+    """Main loop to process data and write MP4 with keystroke labels."""
     
     print(f"Processing {filepath}...")
     try:
@@ -129,15 +187,22 @@ def render_video(filepath, output_file, speed_factor, width=1280, height=720, fp
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     video_out = cv2.VideoWriter(output_file, fourcc, fps, (width, height))
     
-    # Graphics Setup - use proper font metrics
     font = get_monospaced_font(size=18)
     char_w, char_h, ascent, baseline_offset = get_font_metrics(font)
     
-    # State Management
     file_states = {}
     scroll_states = {}
     active_file = "Unknown"
     max_visible_lines = (height // char_h) - 2
+    
+    labels = []
+    label_idx = 0
+    current_video_frame = 0  # Track the current video frame number
+    
+    if save_labels:
+        output_path = Path(output_file)
+        labels_dir = output_path.parent / f"{output_path.stem}_labels"
+        labels_dir.mkdir(parents=True, exist_ok=True)
     
     print("Rendering frames... this may take a while.")
     
@@ -150,11 +215,17 @@ def render_video(filepath, output_file, speed_factor, width=1280, height=720, fp
         if active_file not in file_states:
             file_states[active_file] = ""
             scroll_states[active_file] = 0
-            
+        
+        offset = int(event['RangeOffset'])
+        length = int(event['RangeLength'])
+        new_text = str(event['Text']) if pd.notna(event['Text']) else ""
+        new_text_clean = new_text.replace('\\n', '\n').replace('\\r', '\r')
+        
+        # Record frame number BEFORE applying change
+        video_frame_before = current_video_frame
+        
         if active_file == "TERMINAL":
-            terminal_text = str(event['Text']) if pd.notna(event['Text']) else ""
-            terminal_text = terminal_text.replace('\\n', '\n').replace('\\r', '\r')
-            file_states[active_file] += terminal_text + '\n'
+            file_states[active_file] += new_text_clean + '\n'
         else:
             file_states[active_file] = apply_change(
                 file_states[active_file], event['RangeOffset'], 
@@ -177,8 +248,16 @@ def render_video(filepath, output_file, speed_factor, width=1280, height=720, fp
         
         scroll_states[active_file] = scroll_y
         
+        if next_event is not None:
+            time_delta_ms = next_event['Time'] - event['Time']
+        else:
+            time_delta_ms = 0
+        
+        action = classify_action(offset, length, new_text_clean, time_delta_ms)
+        
         status_text = f"File: {active_file} | Time: {event['Time']/1000:.1f}s | Speed: {speed_factor}x"
         
+        # Calculate frames to write for this event
         if next_event is not None:
             real_delta_ms = next_event['Time'] - event['Time']
             is_long_pause = real_delta_ms > long_pause_threshold
@@ -188,12 +267,14 @@ def render_video(filepath, output_file, speed_factor, width=1280, height=720, fp
                 
                 frame_with_pause = create_frame(
                     width, height, content, (cursor_y, cursor_x), 
-                    scroll_y, active_file, status_text, font, char_w, char_h, ascent, baseline_offset, pause_message=pause_message
+                    scroll_y, active_file, status_text, font, char_w, char_h, 
+                    ascent, baseline_offset, pause_message=pause_message
                 )
                 
                 pause_display_frames = fps * 3
                 for _ in range(pause_display_frames):
                     video_out.write(frame_with_pause)
+                    current_video_frame += 1
                 
                 frames_to_write = fps
             else:
@@ -208,17 +289,78 @@ def render_video(filepath, output_file, speed_factor, width=1280, height=720, fp
 
         frame_image = create_frame(
             width, height, content, (cursor_y, cursor_x), 
-            scroll_y, active_file, status_text, font, char_w, char_h, ascent, baseline_offset
+            scroll_y, active_file, status_text, font, char_w, char_h, 
+            ascent, baseline_offset
         )
+        
+        # Record frame number AFTER applying change (first frame of the new state)
+        video_frame_after = current_video_frame
         
         for _ in range(frames_to_write):
             video_out.write(frame_image)
+            current_video_frame += 1
+        
+        # Save label with video frame numbers
+        if save_labels and action["keystrokes"]:
+            labels.append({
+                "label_idx": label_idx,
+                "event_idx": i,
+                "timestamp_ms": int(event['Time']),
+                "file": active_file,
+                "action_type": action["type"],
+                "keystrokes": action["keystrokes"],
+                "insert_text": action["insert_text"],
+                "cursor": {"y": cursor_y, "x": cursor_x},
+                "video_frame_before": video_frame_before,
+                "video_frame_after": video_frame_after,
+            })
+            label_idx += 1
             
         if i % 100 == 0:
             print(f"Processed {i}/{len(df)} events...", end='\r')
 
     video_out.release()
-    print(f"\nDone! Video saved to {output_file}")
+    
+    if save_labels and labels:
+        with open(labels_dir / "keystrokes.jsonl", 'w') as f:
+            for label in labels:
+                f.write(json.dumps(label) + '\n')
+        
+        all_keys = set()
+        for label in labels:
+            for ks in label["keystrokes"]:
+                all_keys.add(ks["key"])
+        
+        key_vocab = {key: idx for idx, key in enumerate(sorted(all_keys))}
+        
+        metadata = {
+            "source_file": str(filepath),
+            "video_file": str(output_file),
+            "total_events": len(df),
+            "total_insertions": len(labels),
+            "total_keystrokes": sum(len(l["keystrokes"]) for l in labels),
+            "total_video_frames": current_video_frame,
+            "fps": fps,
+            "width": width,
+            "height": height,
+            "speed_factor": speed_factor,
+            "key_vocabulary": key_vocab,
+            "vocab_size": len(key_vocab),
+        }
+        
+        with open(labels_dir / "metadata.json", 'w') as f:
+            json.dump(metadata, f, indent=2)
+        
+        with open(labels_dir / "key_vocab.json", 'w') as f:
+            json.dump(key_vocab, f, indent=2)
+        
+        print(f"\nSaved {len(labels)} insertion labels to {labels_dir}")
+        print(f"Total keystrokes: {metadata['total_keystrokes']}")
+        print(f"Total video frames: {current_video_frame}")
+        print(f"Vocabulary size: {len(key_vocab)}")
+    
+    print(f"Done! Video saved to {output_file}")
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Render coding traces to MP4.")
@@ -227,8 +369,19 @@ if __name__ == "__main__":
     parser.add_argument("--speed", type=float, default=20.0, help="Playback speed multiplier.")
     parser.add_argument("--width", type=int, default=1280, help="Video width.")
     parser.add_argument("--height", type=int, default=720, help="Video height.")
-    parser.add_argument("--long_pause_threshold", type=int, default=120000, help="Threshold for long pause in milliseconds.")
+    parser.add_argument("--long_pause_threshold", type=int, default=120000, 
+                        help="Threshold for long pause in milliseconds.")
+    parser.add_argument("--no_labels", action="store_true", 
+                        help="Disable saving keystroke labels.")
     
     args = parser.parse_args()
     
-    render_video(args.filepath, args.output, args.speed, args.width, args.height, long_pause_threshold=args.long_pause_threshold)
+    render_video(
+        args.filepath, 
+        args.output, 
+        args.speed, 
+        args.width, 
+        args.height, 
+        long_pause_threshold=args.long_pause_threshold,
+        save_labels=not args.no_labels
+    )
