@@ -6,7 +6,7 @@ import numpy as np
 import cv2
 
 
-class InverseDynamicsDatasetWithVideo(Dataset):
+class IDMDataset(Dataset):
     """Dataset that loads before/after frames directly from MP4 video."""
     
     def __init__(self, labels_dir, video_path, transform=None, max_seq_len=32, cache_frames=False):
@@ -160,9 +160,9 @@ if __name__ == "__main__":
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
     ])
 
-    dataset = InverseDynamicsDatasetWithVideo(
-        labels_dir="vid_output_labels/",
-        video_path="vid_output.mp4",
+    dataset = IDMDataset(
+        labels_dir="data/vid_output_labels/",
+        video_path="data/vid_output.mp4",
         transform=transform,
         max_seq_len=32,
         cache_frames=True 
